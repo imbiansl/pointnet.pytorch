@@ -7,13 +7,13 @@ from torch.autograd import Variable
 import numpy as np
 import torch.nn.functional as F
 
-
+# 1st T-net
 class STN3d(nn.Module):
     def __init__(self):
         super(STN3d, self).__init__()
-        self.conv1 = torch.nn.Conv1d(3, 64, 1)
+        self.conv1 = torch.nn.Conv1d(3, 64, 1)     # 1 point per convolution, same effect as shared MLP
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
-        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.conv3 = torch.nn.Conv1d(128, 1024, 1)  # [batch_size, 1024, N]
         self.fc1 = nn.Linear(1024, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 9)
@@ -27,25 +27,26 @@ class STN3d(nn.Module):
 
 
     def forward(self, x):
-        batchsize = x.size()[0]
-        x = F.relu(self.bn1(self.conv1(x)))
+        batchsize = x.size()[0]  # x.shape[0]
+        x = F.relu(self.bn1(self.conv1(x)))  # MLP + batch norm + ReLU
         x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = torch.max(x, 2, keepdim=True)[0]
-        x = x.view(-1, 1024)
+        x = F.relu(self.bn3(self.conv3(x)))  # [batch_size, 1024, N]
+        x = torch.max(x, 2, keepdim=True)[0] # max pooling across points: [batch_size, 1024, 1]
+        x = x.view(-1, 1024)  # [batch_size, 1024]
 
         x = F.relu(self.bn4(self.fc1(x)))
         x = F.relu(self.bn5(self.fc2(x)))
-        x = self.fc3(x)
+        x = self.fc3(x)  # [batch_size, 9]
 
         iden = Variable(torch.from_numpy(np.array([1,0,0,0,1,0,0,0,1]).astype(np.float32))).view(1,9).repeat(batchsize,1)
         if x.is_cuda:
             iden = iden.cuda()
         x = x + iden
-        x = x.view(-1, 3, 3)
+        x = x.view(-1, 3, 3)  # [batch_size, 3, 3]
         return x
 
 
+# 2nd T-net, same as 1st, except that output is 64x64
 class STNkd(nn.Module):
     def __init__(self, k=64):
         super(STNkd, self).__init__()
@@ -84,12 +85,14 @@ class STNkd(nn.Module):
         x = x.view(-1, self.k, self.k)
         return x
 
+
+# Main network till global feature vector
 class PointNetfeat(nn.Module):
     def __init__(self, global_feat = True, feature_transform = False):
         super(PointNetfeat, self).__init__()
-        self.stn = STN3d()
+        self.stn = STN3d()  # T-net output
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
-        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1) 
         self.conv3 = torch.nn.Conv1d(128, 1024, 1)
         self.bn1 = nn.BatchNorm1d(64)
         self.bn2 = nn.BatchNorm1d(128)
@@ -100,12 +103,12 @@ class PointNetfeat(nn.Module):
             self.fstn = STNkd(k=64)
 
     def forward(self, x):
-        n_pts = x.size()[2]
-        trans = self.stn(x)
-        x = x.transpose(2, 1)
-        x = torch.bmm(x, trans)
-        x = x.transpose(2, 1)
-        x = F.relu(self.bn1(self.conv1(x)))
+        n_pts = x.size()[2]  # 3? x.shape = [batch_size, 1, 3] ?
+        trans = self.stn(x)  # T_net output. shape = [batch_size, 3, 3]
+        x = x.transpose(2, 1)    # swap dimensions 2 and 1
+        x = torch.bmm(x, trans)  # batch matrix multiply
+        x = x.transpose(2, 1)    # swap dimensions 2 and 1
+        x = F.relu(self.bn1(self.conv1(x)))  # One 64-d layer is actually missing here.
 
         if self.feature_transform:
             trans_feat = self.fstn(x)
@@ -115,14 +118,14 @@ class PointNetfeat(nn.Module):
         else:
             trans_feat = None
 
-        pointfeat = x
-        x = F.relu(self.bn2(self.conv2(x)))
+        pointfeat = x  # Backup
+        x = F.relu(self.bn2(self.conv2(x))) # One layer missing here too?
         x = self.bn3(self.conv3(x))
         x = torch.max(x, 2, keepdim=True)[0]
-        x = x.view(-1, 1024)
+        x = x.view(-1, 1024)  # x is globalfeat
         if self.global_feat:
             return x, trans, trans_feat
-        else:
+        else:  # Both pointfeat and globalfeat wanted
             x = x.view(-1, 1024, 1).repeat(1, 1, n_pts)
             return torch.cat([x, pointfeat], 1), trans, trans_feat
 

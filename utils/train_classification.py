@@ -73,6 +73,7 @@ dataloader = torch.utils.data.DataLoader(
 testdataloader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=opt.batchSize,
+        print(x.shpe)
         shuffle=True,
         num_workers=int(opt.workers))
 
